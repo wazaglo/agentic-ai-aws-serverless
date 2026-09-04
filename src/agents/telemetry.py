@@ -6,9 +6,13 @@ exporter, which lands structured spans in CloudWatch Logs. Set
 OTEL_EXPORTER_OTLP_ENDPOINT (for example via the ADOT Lambda layer or
 the CloudWatch OTLP endpoint) to export real traces instead.
 X-Ray tracing on the Lambda functions and the state machine is enabled
-separately in the SAM templates, so the two views complement each other.
+separately in the CloudFormation template, so the two views complement
+each other.
 """
+import logging
 import os
+
+logger = logging.getLogger(__name__)
 
 _configured = False
 
@@ -28,4 +32,4 @@ def init_telemetry(service_name: str) -> None:
             telemetry.setup_console_exporter()
         _configured = True
     except Exception as exc:  # never let tracing break the agent
-        print(f"telemetry disabled: {exc}")
+        logger.warning("telemetry disabled: %s", exc)

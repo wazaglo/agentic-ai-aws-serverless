@@ -4,6 +4,7 @@ Returns exactly the shape the Parallel branch's ResultSelector reads:
 {statusCode, weather_analysis, risk_level, conditions, recommendation}.
 risk_level is deterministic code (an auditable gate); the model writes prose."""
 import json
+import logging
 import os
 import re
 
@@ -12,6 +13,8 @@ from strands.models import BedrockModel
 
 from agents.telemetry import init_telemetry
 from agents.weather import get_forecast
+
+logger = logging.getLogger(__name__)
 
 MODEL_ID = os.environ.get("MODEL_ID", "amazon.nova-lite-v1:0")
 
@@ -59,13 +62,16 @@ def analyze(event: dict) -> dict:
         )).message["content"][0]["text"]
         match = re.search(r"\{.*\}", text, re.DOTALL)
         pair = json.loads(match.group(0)) if match else {}
-    except Exception:
+    except Exception as exc:
+        logger.warning("orch-weather LLM failed: %s", exc)
         pair = {}
 
     if risk == "HIGH":
         default_rec = "High rain risk; review travel plans or consider rebooking."
     else:
         default_rec = "Conditions look fine for travel."
+
+    logger.info("weather for %s: risk=%s worst=%d%%", city, risk, worst)
     return {
         "statusCode": 200,
         "weather_analysis": str(pair.get("weather_analysis") or
@@ -82,4 +88,5 @@ def handler(event, _context):
             return {"statusCode": 400, "error": f"unknown action: {event.get('action')}"}
         return analyze(event)
     except Exception as exc:
+        logger.error("orch-weather handler failed: %s", exc, exc_info=True)
         return {"statusCode": 500, "error": str(exc)}

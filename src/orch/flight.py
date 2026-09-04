@@ -3,17 +3,20 @@
 Returns exactly the shape the Parallel branch's ResultSelector reads:
 {statusCode, flights_found, flight_options, best_option, within_budget}.
 Uses the same deterministic mock provider as agents/flight.py."""
+import logging
 import os
+import re
 
 from agents.flight import search_flights
 from agents.telemetry import init_telemetry
+
+logger = logging.getLogger(__name__)
 
 
 def _depart_date(travel_dates) -> str:
     """Pick the outbound date from a range string like '2026-09-21 to 2026-09-24'."""
     if not travel_dates:
         return ""
-    import re
     match = re.search(r"(\d{4}-\d{2}-\d{2})", str(travel_dates))
     return match.group(1) if match else str(travel_dates)
 
@@ -42,6 +45,8 @@ def search(event: dict) -> dict:
     best = scored[0]
     within = (budget is None) or (best["price_gbp"] <= int(budget))
 
+    logger.info("flight search %s->%s: %d options, best=%s within_budget=%s",
+                origin, destination, len(options), best.get("flight_no"), within)
     return {"statusCode": 200, "flights_found": len(options),
             "flight_options": options, "best_option": best, "within_budget": within}
 
@@ -53,4 +58,5 @@ def handler(event, _context):
             return {"statusCode": 400, "error": f"unknown action: {event.get('action')}"}
         return search(event)
     except Exception as exc:
+        logger.error("orch-flight handler failed: %s", exc, exc_info=True)
         return {"statusCode": 500, "error": str(exc)}

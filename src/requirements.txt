@@ -1,2 +1,2 @@
-strands-agents>=1.0.0
+strands-agents>=1.54.0
 requests>=2.31.0

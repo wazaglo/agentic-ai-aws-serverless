@@ -11,14 +11,12 @@ Description: >
       Activity provides human-in-the-loop review (pure task-token pattern, no
       SQS). Includes the BookingSuccessAfterReview fix so the human-review
       path surfaces the final booking confirmation.
-  Mirrors the deployment built in account 195675606509 (us-east-1).
   Build the code package first (scripts/build-deployment-package.sh) and upload
   it to CodeBucket/CodeKey before deploying.
 
 Parameters:
   CodeBucket:
     Type: String
-    Default: travel-agents-code-195675606509
     Description: S3 bucket holding the combined Lambda deployment package.
   CodeKey:
     Type: String
@@ -41,8 +39,65 @@ Parameters:
     Type: String
     Default: human-review
     Description: Name of the Step Functions Activity used for human-in-the-loop review.
+  LogRetentionDays:
+    Type: Number
+    Default: 30
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1827, 3653]
+    Description: CloudWatch Logs retention period in days for all Lambda log groups.
 
 Resources:
+  # ===================================================================
+  # CLOUDWATCH LOG GROUPS (with retention)
+  # ===================================================================
+
+  PlannerAgentLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/PlannerAgent
+      RetentionInDays: !Ref LogRetentionDays
+
+  WeatherAgentLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/WeatherAgent
+      RetentionInDays: !Ref LogRetentionDays
+
+  FlightAgentLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/FlightAgent
+      RetentionInDays: !Ref LogRetentionDays
+
+  TripCollectorLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/TripCollector
+      RetentionInDays: !Ref LogRetentionDays
+
+  OrchPlannerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/orch-planner-agent
+      RetentionInDays: !Ref LogRetentionDays
+
+  OrchWeatherLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/orch-weather-agent
+      RetentionInDays: !Ref LogRetentionDays
+
+  OrchFlightLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/orch-flight-manager-agent
+      RetentionInDays: !Ref LogRetentionDays
+
+  StepFunctionsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/stepfunctions/${AWS::StackName}-travel-booking-orchestration
+      RetentionInDays: !Ref LogRetentionDays
+
   # ===================================================================
   # MODULE 1 - CHOREOGRAPHY
   # ===================================================================
@@ -117,6 +172,10 @@ Resources:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
         - arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess
 
+  # ===================================================================
+  # CHOREOGRAPHY LAMBDAS
+  # ===================================================================
+
   PlannerAgent:
     Type: AWS::Lambda::Function
     Properties:
@@ -133,6 +192,9 @@ Resources:
         Variables:
           MODEL_ID: !Ref ModelId
           EVENT_BUS_NAME: !Ref TravelBus
+      DeadLetterConfig:
+        TargetArn: !GetAtt DeadLetterQueue.Arn
+    DependsOn: PlannerAgentLogGroup
 
   WeatherAgent:
     Type: AWS::Lambda::Function
@@ -150,6 +212,9 @@ Resources:
         Variables:
           MODEL_ID: !Ref ModelId
           EVENT_BUS_NAME: !Ref TravelBus
+      DeadLetterConfig:
+        TargetArn: !GetAtt DeadLetterQueue.Arn
+    DependsOn: WeatherAgentLogGroup
 
   FlightAgent:
     Type: AWS::Lambda::Function
@@ -167,6 +232,9 @@ Resources:
         Variables:
           MODEL_ID: !Ref ModelId
           EVENT_BUS_NAME: !Ref TravelBus
+      DeadLetterConfig:
+        TargetArn: !GetAtt DeadLetterQueue.Arn
+    DependsOn: FlightAgentLogGroup
 
   TripCollector:
     Type: AWS::Lambda::Function
@@ -180,6 +248,13 @@ Resources:
       Timeout: 120
       MemorySize: 512
       TracingConfig: { Mode: Active }
+      DeadLetterConfig:
+        TargetArn: !GetAtt DeadLetterQueue.Arn
+    DependsOn: TripCollectorLogGroup
+
+  # ===================================================================
+  # EVENTBRIDGE RULES
+  # ===================================================================
 
   RuleOnTripRequested:
     Type: AWS::Events::Rule
@@ -279,6 +354,9 @@ Resources:
       Environment:
         Variables:
           MODEL_ID: !Ref ModelId
+      DeadLetterConfig:
+        TargetArn: !GetAtt DeadLetterQueue.Arn
+    DependsOn: OrchPlannerLogGroup
 
   OrchWeatherAgent:
     Type: AWS::Lambda::Function
@@ -295,6 +373,9 @@ Resources:
       Environment:
         Variables:
           MODEL_ID: !Ref ModelId
+      DeadLetterConfig:
+        TargetArn: !GetAtt DeadLetterQueue.Arn
+    DependsOn: OrchWeatherLogGroup
 
   OrchFlightManagerAgent:
     Type: AWS::Lambda::Function
@@ -311,6 +392,9 @@ Resources:
       Environment:
         Variables:
           MODEL_ID: !Ref ModelId
+      DeadLetterConfig:
+        TargetArn: !GetAtt DeadLetterQueue.Arn
+    DependsOn: OrchFlightLogGroup
 
   StepFunctionsExecutionRole:
     Type: AWS::IAM::Role
@@ -337,14 +421,61 @@ Resources:
                   - !GetAtt OrchPlannerAgent.Arn
                   - !GetAtt OrchWeatherAgent.Arn
                   - !GetAtt OrchFlightManagerAgent.Arn
+              - Effect: Allow
+                Action: logs:CreateLogDelivery
+                Resource: '*'
+              - Effect: Allow
+                Action: logs:PutLogEvents
+                Resource: '*'
+
+  # ===================================================================
+  # DEAD LETTER QUEUE (for Lambda DLQ)
+  # ===================================================================
+
+  DeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub ${AWS::StackName}-dead-letter
+      MessageRetentionPeriod: 1209600  # 14 days
+      Tags:
+        - Key: Purpose
+          Value: Lambda dead-letter queue
+
+  DeadLetterQueuePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: AllowDLQSend
+      Roles:
+        - !Ref AgentRole
+        - !Ref CollectorRole
+        - !Ref OrchAgentRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - sqs:SendMessage
+            Resource: !GetAtt DeadLetterQueue.Arn
+
+  # ===================================================================
+  # STATE MACHINE
+  # ===================================================================
 
   TravelBookingOrchestrator:
     Type: AWS::StepFunctions::StateMachine
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
     Properties:
       StateMachineName: travel-booking-orchestration
       RoleArn: !GetAtt StepFunctionsExecutionRole.Arn
       TracingConfiguration:
         Enabled: true
+      LoggingConfiguration:
+        Level: ALL
+        IncludeExecutionData: true
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt StepFunctionsLogGroup.Arn
       Definition:
         Comment: Multi-Agent Travel Booking Orchestration - Pure Task Token Pattern (No SQS)
         StartAt: PlannerExtract
@@ -636,3 +767,9 @@ Outputs:
   CollectorLogGroup:
     Description: Where the choreography terminal listener prints the final outcome
     Value: !Sub /aws/lambda/${TripCollector}
+  DeadLetterQueueArn:
+    Description: SQS DLQ for Lambda failures
+    Value: !GetAtt DeadLetterQueue.Arn
+  DeploymentBucket:
+    Description: S3 bucket holding the code
+    Value: !Ref CodeBucket

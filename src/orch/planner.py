@@ -12,6 +12,7 @@ code-generated prose but keep the deterministic decision, and we always
 return the consistent {statusCode, ...} structure so the ASL never crashes.
 """
 import json
+import logging
 import os
 import re
 
@@ -20,6 +21,8 @@ from strands.models import BedrockModel
 
 from agents.flight import book_flight
 from agents.telemetry import init_telemetry
+
+logger = logging.getLogger(__name__)
 
 MODEL_ID = os.environ.get("MODEL_ID", "amazon.nova-lite-v1:0")
 
@@ -52,6 +55,7 @@ def _model_json(prompt: str) -> dict:
 
 
 def extract(event: dict) -> dict:
+    """Normalise the free-text request into structured data."""
     request = {k: event.get(k) for k in
                ("origin", "destination", "travel_dates", "travelers",
                 "budget", "airline_preference", "interests")}
@@ -76,7 +80,8 @@ def extract(event: dict) -> dict:
         )
         extracted = data.get("extractedData") or fallback_data
         confidence = float(data.get("confidence", 0.5))
-    except Exception:
+    except Exception as exc:
+        logger.warning("extract LLM failed, using fallback: %s", exc)
         extracted = fallback_data
     ready = bool(event.get("origin") and event.get("destination")
                  and event.get("travel_dates"))
@@ -99,6 +104,7 @@ def _gate(weather_data: dict, flight_data: dict):
 
 
 def analyze_and_decide(event: dict) -> dict:
+    """Analyze weather + flight data, decide auto-book or human review."""
     weather_data = event.get("weather_data") or {}
     flight_data = event.get("flight_data") or {}
     decision, reason = _gate(weather_data, flight_data)
@@ -120,14 +126,18 @@ def analyze_and_decide(event: dict) -> dict:
             ". Flight: " + json.dumps(flight_data.get("best_option"))
         )
         message = str(prose.get("message") or reason)
-    except Exception:
+    except Exception as exc:
+        logger.warning("analyze_and_decide LLM failed, using code prose: %s", exc)
         message = reason
+
+    logger.info("decision=%s reason=%s booking=%s", decision, reason, booking_status)
     return {"statusCode": 200, "decision": decision,
             "decision_reason": reason, "booking_status": booking_status,
             "booking_confirmation": confirmation, "message": message}
 
 
 def finalize_booking(event: dict) -> dict:
+    """Book after human approval via the Activity."""
     flight_data = event.get("flight_data") or {}
     approval = event.get("human_approval") or {}
     best = flight_data.get("best_option")
@@ -145,8 +155,11 @@ def finalize_booking(event: dict) -> dict:
             ". Flight: " + json.dumps(best)
         )
         message = str(prose.get("message") or "Booking confirmed.")
-    except Exception:
+    except Exception as exc:
+        logger.warning("finalize_booking LLM failed: %s", exc)
         message = "Booking confirmed after human approval."
+
+    logger.info("finalized booking %s", confirmation)
     return {"statusCode": 200, "booking_status": "confirmed",
             "booking_confirmation": confirmation, "message": message}
 
@@ -161,7 +174,9 @@ def handler(event, _context):
         action = event.get("action")
         fn = _ACTIONS.get(action)
         if fn is None:
+            logger.error("unknown action: %s", action)
             return {"statusCode": 400, "error": f"unknown action: {action}"}
         return fn(event)
     except Exception as exc:
+        logger.error("orch-planner handler failed: %s", exc, exc_info=True)
         return {"statusCode": 500, "error": str(exc)}
