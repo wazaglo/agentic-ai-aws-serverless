@@ -95,7 +95,8 @@ Resources:
   StepFunctionsLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub /aws/stepfunctions/${AWS::StackName}-travel-booking-orchestration
+      # /aws/vendedlogs/states prefix avoids CloudWatch resource-policy size limits
+      LogGroupName: /aws/vendedlogs/states/travel-booking-orchestration
       RetentionInDays: !Ref LogRetentionDays
 
   # ===================================================================
@@ -194,7 +195,9 @@ Resources:
           EVENT_BUS_NAME: !Ref TravelBus
       DeadLetterConfig:
         TargetArn: !GetAtt DeadLetterQueue.Arn
-    DependsOn: PlannerAgentLogGroup
+    DependsOn:
+      - PlannerAgentLogGroup
+      - DeadLetterQueuePolicy
 
   WeatherAgent:
     Type: AWS::Lambda::Function
@@ -214,7 +217,9 @@ Resources:
           EVENT_BUS_NAME: !Ref TravelBus
       DeadLetterConfig:
         TargetArn: !GetAtt DeadLetterQueue.Arn
-    DependsOn: WeatherAgentLogGroup
+    DependsOn:
+      - WeatherAgentLogGroup
+      - DeadLetterQueuePolicy
 
   FlightAgent:
     Type: AWS::Lambda::Function
@@ -234,7 +239,9 @@ Resources:
           EVENT_BUS_NAME: !Ref TravelBus
       DeadLetterConfig:
         TargetArn: !GetAtt DeadLetterQueue.Arn
-    DependsOn: FlightAgentLogGroup
+    DependsOn:
+      - FlightAgentLogGroup
+      - DeadLetterQueuePolicy
 
   TripCollector:
     Type: AWS::Lambda::Function
@@ -250,7 +257,9 @@ Resources:
       TracingConfig: { Mode: Active }
       DeadLetterConfig:
         TargetArn: !GetAtt DeadLetterQueue.Arn
-    DependsOn: TripCollectorLogGroup
+    DependsOn:
+      - TripCollectorLogGroup
+      - DeadLetterQueuePolicy
 
   # ===================================================================
   # EVENTBRIDGE RULES
@@ -356,7 +365,9 @@ Resources:
           MODEL_ID: !Ref ModelId
       DeadLetterConfig:
         TargetArn: !GetAtt DeadLetterQueue.Arn
-    DependsOn: OrchPlannerLogGroup
+    DependsOn:
+      - OrchPlannerLogGroup
+      - DeadLetterQueuePolicy
 
   OrchWeatherAgent:
     Type: AWS::Lambda::Function
@@ -375,7 +386,9 @@ Resources:
           MODEL_ID: !Ref ModelId
       DeadLetterConfig:
         TargetArn: !GetAtt DeadLetterQueue.Arn
-    DependsOn: OrchWeatherLogGroup
+    DependsOn:
+      - OrchWeatherLogGroup
+      - DeadLetterQueuePolicy
 
   OrchFlightManagerAgent:
     Type: AWS::Lambda::Function
@@ -394,7 +407,9 @@ Resources:
           MODEL_ID: !Ref ModelId
       DeadLetterConfig:
         TargetArn: !GetAtt DeadLetterQueue.Arn
-    DependsOn: OrchFlightLogGroup
+    DependsOn:
+      - OrchFlightLogGroup
+      - DeadLetterQueuePolicy
 
   StepFunctionsExecutionRole:
     Type: AWS::IAM::Role
@@ -421,11 +436,21 @@ Resources:
                   - !GetAtt OrchPlannerAgent.Arn
                   - !GetAtt OrchWeatherAgent.Arn
                   - !GetAtt OrchFlightManagerAgent.Arn
+              # CloudWatch Logs log delivery for SFN execution logging.
+              # Resource MUST be literal '*' - these actions do not support
+              # resource-level permissions (see docs: cw-logs.html).
               - Effect: Allow
-                Action: logs:CreateLogDelivery
-                Resource: '*'
-              - Effect: Allow
-                Action: logs:PutLogEvents
+                Action:
+                  - logs:CreateLogDelivery
+                  - logs:CreateLogStream
+                  - logs:GetLogDelivery
+                  - logs:UpdateLogDelivery
+                  - logs:DeleteLogDelivery
+                  - logs:ListLogDeliveries
+                  - logs:PutLogEvents
+                  - logs:PutResourcePolicy
+                  - logs:DescribeResourcePolicies
+                  - logs:DescribeLogGroups
                 Resource: '*'
 
   # ===================================================================
