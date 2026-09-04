@@ -1,5 +1,11 @@
 # `docs/` — documentation assets
 
+| Path | Description |
+|---|---|
+| `operations.md` | Monitoring, cost breakdown, security notes, troubleshooting, workshop deltas |
+| `images/` | Self-contained architecture SVGs (official AWS icons inlined) |
+| `screenshots/` | Authenticated AWS console captures proving the stack is deployed and a booking ran end-to-end |
+
 ## `images/`
 
 | File | Description |
