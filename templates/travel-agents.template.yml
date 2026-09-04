@@ -1,0 +1,741 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Multi-agent travel booking system on AWS Serverless. Deploys BOTH agent
+  patterns in one stack:
+    Module 1 (Choreography) - agents coordinate by emitting domain events on a
+      custom EventBridge bus. No central controller.
+        TripRequested -> PlannerAgent -> ItineraryPlanned -> WeatherAgent ->
+        WeatherChecked -> FlightAgent -> FlightBooked|TripAbandoned -> TripCollector
+    Module 2 (Orchestration) - a Step Functions state machine drives three
+      Lambda agents; Weather + Flight run in a Parallel state; a Step Functions
+      Activity provides human-in-the-loop review (pure task-token pattern, no
+      SQS). Includes the BookingSuccessAfterReview fix so the human-review
+      path surfaces the final booking confirmation.
+  Mirrors the deployment built in account 195675606509 (us-east-1).
+  Build the code package first (scripts/build-deployment-package.sh) and upload
+  it to CodeBucket/CodeKey before deploying.
+
+Parameters:
+  CodeBucket:
+    Type: String
+    Default: travel-agents-code-195675606509
+    Description: S3 bucket holding the combined Lambda deployment package.
+  CodeKey:
+    Type: String
+    Default: travel-agents.zip
+    Description: >
+      S3 key of the combined deployment package (agents + choreography + orch,
+      third-party deps bundled, boto3/botocore excluded). Build it with
+      scripts/build-deployment-package.sh and upload it here.
+  ModelId:
+    Type: String
+    Default: amazon.nova-lite-v1:0
+    Description: >
+      Bedrock model id. Use the in-region id; the us.-prefixed id
+      (us.amazon.nova-lite-v1:0) silently routes cross-region to us-west-2.
+  BusName:
+    Type: String
+    Default: travel-agents-bus
+    Description: Name of the custom EventBridge bus the choreography agents use.
+  ActivityName:
+    Type: String
+    Default: human-review
+    Description: Name of the Step Functions Activity used for human-in-the-loop review.
+
+Resources:
+  # ===================================================================
+  # MODULE 1 - CHOREOGRAPHY
+  # ===================================================================
+
+  # The "public square": a custom bus agents post domain events to.
+  TravelBus:
+    Type: AWS::Events::EventBus
+    Properties:
+      Name: !Ref BusName
+
+  # The badge the bus wears to page the workers (the "Use service role"
+  # you get when you wire a rule to a Lambda in the console).
+  BusToLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: AWSEventsToLambda-Travel
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: events.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: InvokeTravelAgents
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource:
+                  - !GetAtt PlannerAgent.Arn
+                  - !GetAtt WeatherAgent.Arn
+                  - !GetAtt FlightAgent.Arn
+                  - !GetAtt TripCollector.Arn
+
+  # Shared badge for the three "thinking" agents: logs + X-Ray + Bedrock
+  # (invoke and stream) + permission to post to the bus.
+  AgentRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess
+      Policies:
+        - PolicyName: TravelAgentPerms
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource:
+                  - !Sub arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/us.amazon.nova-lite-v1:0
+                  - !Sub arn:aws:bedrock:${AWS::Region}::foundation-model/amazon.nova-lite-v1:0
+                  - !Sub arn:aws:bedrock:${AWS::Region}::foundation-model/us.amazon.nova-lite-v1:0
+              - Effect: Allow
+                Action: events:PutEvents
+                Resource: !GetAtt TravelBus.Arn
+
+  # The terminal listener only prints the outcome: logs, nothing else.
+  CollectorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess
+
+  # -- The four workers (same zip, different front doors) --
+  PlannerAgent:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: PlannerAgent
+      Runtime: python3.12
+      Architectures: [x86_64]
+      Handler: choreography.planner_handler.handler
+      Code: { S3Bucket: !Ref CodeBucket, S3Key: !Ref CodeKey }
+      Role: !GetAtt AgentRole.Arn
+      Timeout: 120
+      MemorySize: 512
+      TracingConfig: { Mode: Active }
+      Environment:
+        Variables:
+          MODEL_ID: !Ref ModelId
+          EVENT_BUS_NAME: !Ref TravelBus
+
+  WeatherAgent:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: WeatherAgent
+      Runtime: python3.12
+      Architectures: [x86_64]
+      Handler: choreography.weather_handler.handler
+      Code: { S3Bucket: !Ref CodeBucket, S3Key: !Ref CodeKey }
+      Role: !GetAtt AgentRole.Arn
+      Timeout: 120
+      MemorySize: 512
+      TracingConfig: { Mode: Active }
+      Environment:
+        Variables:
+          MODEL_ID: !Ref ModelId
+          EVENT_BUS_NAME: !Ref TravelBus
+
+  FlightAgent:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: FlightAgent
+      Runtime: python3.12
+      Architectures: [x86_64]
+      Handler: choreography.flight_handler.handler
+      Code: { S3Bucket: !Ref CodeBucket, S3Key: !Ref CodeKey }
+      Role: !GetAtt AgentRole.Arn
+      Timeout: 120
+      MemorySize: 512
+      TracingConfig: { Mode: Active }
+      Environment:
+        Variables:
+          MODEL_ID: !Ref ModelId
+          EVENT_BUS_NAME: !Ref TravelBus
+
+  TripCollector:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: TripCollector
+      Runtime: python3.12
+      Architectures: [x86_64]
+      Handler: choreography.collector_handler.handler
+      Code: { S3Bucket: !Ref CodeBucket, S3Key: !Ref CodeKey }
+      Role: !GetAtt CollectorRole.Arn
+      Timeout: 120
+      MemorySize: 512
+      TracingConfig: { Mode: Active }
+
+  # -- The wiring: four standing orders on the bus --
+  RuleOnTripRequested:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: travel-on-trip-requested
+      EventBusName: !Ref TravelBus
+      State: ENABLED
+      EventPattern:
+        source: [travel.demo]
+        detail-type: [TripRequested]
+      Targets:
+        - { Id: planner, Arn: !GetAtt PlannerAgent.Arn, RoleArn: !GetAtt BusToLambdaRole.Arn }
+
+  RuleOnItineraryPlanned:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: travel-on-itinerary-planned
+      EventBusName: !Ref TravelBus
+      State: ENABLED
+      EventPattern:
+        source: [travel.agents]
+        detail-type: [ItineraryPlanned]
+      Targets:
+        - { Id: weather, Arn: !GetAtt WeatherAgent.Arn, RoleArn: !GetAtt BusToLambdaRole.Arn }
+
+  RuleOnWeatherChecked:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: travel-on-weather-checked
+      EventBusName: !Ref TravelBus
+      State: ENABLED
+      EventPattern:
+        source: [travel.agents]
+        detail-type: [WeatherChecked]
+      Targets:
+        - { Id: flight, Arn: !GetAtt FlightAgent.Arn, RoleArn: !GetAtt BusToLambdaRole.Arn }
+
+  RuleOnTripFinished:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: travel-on-trip-finished
+      EventBusName: !Ref TravelBus
+      State: ENABLED
+      EventPattern:
+        source: [travel.agents]
+        detail-type: [FlightBooked, TripAbandoned]
+      Targets:
+        - { Id: collector, Arn: !GetAtt TripCollector.Arn, RoleArn: !GetAtt BusToLambdaRole.Arn }
+
+  # ===================================================================
+  # MODULE 2 - ORCHESTRATION
+  # ===================================================================
+
+  # Human-in-the-loop approver inbox (task-token pattern, no SQS).
+  HumanReviewActivity:
+    Type: AWS::StepFunctions::Activity
+    Properties:
+      Name: !Ref ActivityName
+
+  # Shared badge for the three orchestration agents: logs + X-Ray + Bedrock.
+  # No EventBridge - these agents return results, they don't publish events.
+  OrchAgentRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess
+      Policies:
+        - PolicyName: TravelAgentPerms
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource:
+                  - !Sub arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/us.amazon.nova-lite-v1:0
+                  - !Sub arn:aws:bedrock:${AWS::Region}::foundation-model/amazon.nova-lite-v1:0
+                  - !Sub arn:aws:bedrock:${AWS::Region}::foundation-model/us.amazon.nova-lite-v1:0
+
+  # The three pure-task agents (input in, result out; no side-channel).
+  OrchPlannerAgent:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: orch-planner-agent
+      Runtime: python3.12
+      Architectures: [x86_64]
+      Handler: orch.planner.handler
+      Code: { S3Bucket: !Ref CodeBucket, S3Key: !Ref CodeKey }
+      Role: !GetAtt OrchAgentRole.Arn
+      Timeout: 120
+      MemorySize: 512
+      TracingConfig: { Mode: Active }
+      Environment:
+        Variables:
+          MODEL_ID: !Ref ModelId
+
+  OrchWeatherAgent:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: orch-weather-agent
+      Runtime: python3.12
+      Architectures: [x86_64]
+      Handler: orch.weather.handler
+      Code: { S3Bucket: !Ref CodeBucket, S3Key: !Ref CodeKey }
+      Role: !GetAtt OrchAgentRole.Arn
+      Timeout: 120
+      MemorySize: 512
+      TracingConfig: { Mode: Active }
+      Environment:
+        Variables:
+          MODEL_ID: !Ref ModelId
+
+  OrchFlightManagerAgent:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: orch-flight-manager-agent
+      Runtime: python3.12
+      Architectures: [x86_64]
+      Handler: orch.flight.handler
+      Code: { S3Bucket: !Ref CodeBucket, S3Key: !Ref CodeKey }
+      Role: !GetAtt OrchAgentRole.Arn
+      Timeout: 120
+      MemorySize: 512
+      TracingConfig: { Mode: Active }
+      Environment:
+        Variables:
+          MODEL_ID: !Ref ModelId
+
+  # The conductor's badge: page the three agents + complete/fail activity tasks.
+  StepFunctionsExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: states.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: OrchestrationPerms
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - states:SendTaskSuccess
+                  - states:SendTaskFailure
+                Resource: '*'
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource:
+                  - !GetAtt OrchPlannerAgent.Arn
+                  - !GetAtt OrchWeatherAgent.Arn
+                  - !GetAtt OrchFlightManagerAgent.Arn
+
+  # The flow: one readable document owns order, parallelism, the branch,
+  # retries, and human-in-the-loop. The four ARNs are built from pseudo
+  # parameters so the template stays region/account portable; they match the
+  # FunctionName / ActivityName values set above.
+  TravelBookingOrchestrator:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      Name: travel-booking-orchestration
+      Type: STANDARD
+      RoleArn: !GetAtt StepFunctionsExecutionRole.Arn
+      TracingConfiguration:
+        Enabled: true
+      Definition: !Sub |
+        {
+          "Comment": "Multi-Agent Travel Booking Orchestration - Pure Task Token Pattern (No SQS)",
+          "StartAt": "PlannerExtract",
+          "States": {
+            "PlannerExtract": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::lambda:invoke",
+              "Parameters": {
+                "FunctionName": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:orch-planner-agent",
+                "Payload": {
+                  "action": "extract",
+                  "bookingID.$": "$.bookingID",
+                  "userId.$": "$.userId",
+                  "origin.$": "$.origin",
+                  "destination.$": "$.destination",
+                  "travel_dates.$": "$.travel_dates",
+                  "travelers.$": "$.travelers",
+                  "budget.$": "$.budget",
+                  "airline_preference.$": "$.airline_preference",
+                  "interests.$": "$.interests"
+                }
+              },
+              "ResultPath": "$.plannerExtractResult",
+              "ResultSelector": {
+                "statusCode.$": "$.Payload.statusCode",
+                "extractedData.$": "$.Payload.extractedData",
+                "confidence.$": "$.Payload.confidence",
+                "ready_for_coordination.$": "$.Payload.ready_for_coordination"
+              },
+              "Next": "ParallelWeatherAndFlight",
+              "Retry": [
+                {
+                  "ErrorEquals": [
+                    "Lambda.ServiceException",
+                    "Lambda.AWSLambdaException",
+                    "Lambda.SdkClientException"
+                  ],
+                  "IntervalSeconds": 2,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 2.0
+                }
+              ],
+              "Catch": [
+                {
+                  "ErrorEquals": ["States.ALL"],
+                  "Next": "HandleError",
+                  "ResultPath": "$.error"
+                }
+              ]
+            },
+            "ParallelWeatherAndFlight": {
+              "Type": "Parallel",
+              "Comment": "Execute weather analysis and flight search in parallel",
+              "Branches": [
+                {
+                  "StartAt": "WeatherGet",
+                  "States": {
+                    "WeatherGet": {
+                      "Type": "Task",
+                      "Resource": "arn:aws:states:::lambda:invoke",
+                      "Parameters": {
+                        "FunctionName": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:orch-weather-agent",
+                        "Payload": {
+                          "action": "analyze",
+                          "bookingID.$": "$.bookingID",
+                          "origin.$": "$.origin",
+                          "destination.$": "$.destination",
+                          "travel_dates.$": "$.travel_dates",
+                          "travelers.$": "$.travelers"
+                        }
+                      },
+                      "ResultSelector": {
+                        "statusCode.$": "$.Payload.statusCode",
+                        "weather_analysis.$": "$.Payload.weather_analysis",
+                        "risk_level.$": "$.Payload.risk_level",
+                        "conditions.$": "$.Payload.conditions",
+                        "recommendation.$": "$.Payload.recommendation"
+                      },
+                      "End": true,
+                      "Retry": [
+                        {
+                          "ErrorEquals": [
+                            "Lambda.ServiceException",
+                            "Lambda.AWSLambdaException",
+                            "Lambda.SdkClientException"
+                          ],
+                          "IntervalSeconds": 2,
+                          "MaxAttempts": 3,
+                          "BackoffRate": 2.0
+                        }
+                      ]
+                    }
+                  }
+                },
+                {
+                  "StartAt": "FlightSearch",
+                  "States": {
+                    "FlightSearch": {
+                      "Type": "Task",
+                      "Resource": "arn:aws:states:::lambda:invoke",
+                      "Parameters": {
+                        "FunctionName": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:orch-flight-manager-agent",
+                        "Payload": {
+                          "action": "search",
+                          "bookingID.$": "$.bookingID",
+                          "origin.$": "$.origin",
+                          "destination.$": "$.destination",
+                          "travel_dates.$": "$.travel_dates",
+                          "travelers.$": "$.travelers",
+                          "budget.$": "$.budget",
+                          "airline_preference.$": "$.airline_preference"
+                        }
+                      },
+                      "ResultSelector": {
+                        "statusCode.$": "$.Payload.statusCode",
+                        "flights_found.$": "$.Payload.flights_found",
+                        "flight_options.$": "$.Payload.flight_options",
+                        "best_option.$": "$.Payload.best_option",
+                        "within_budget.$": "$.Payload.within_budget"
+                      },
+                      "End": true,
+                      "Retry": [
+                        {
+                          "ErrorEquals": [
+                            "Lambda.ServiceException",
+                            "Lambda.AWSLambdaException",
+                            "Lambda.SdkClientException"
+                          ],
+                          "IntervalSeconds": 2,
+                          "MaxAttempts": 3,
+                          "BackoffRate": 2.0
+                        }
+                      ]
+                    }
+                  }
+                }
+              ],
+              "ResultPath": "$.parallelResults",
+              "Next": "PlannerAnalyzeAndBook",
+              "Catch": [
+                {
+                  "ErrorEquals": ["States.ALL"],
+                  "Next": "HandleError",
+                  "ResultPath": "$.error"
+                }
+              ]
+            },
+            "PlannerAnalyzeAndBook": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::lambda:invoke",
+              "Parameters": {
+                "FunctionName": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:orch-planner-agent",
+                "Payload": {
+                  "action": "analyze_and_decide",
+                  "bookingID.$": "$.bookingID",
+                  "userId.$": "$.userId",
+                  "origin.$": "$.origin",
+                  "destination.$": "$.destination",
+                  "travel_dates.$": "$.travel_dates",
+                  "travelers.$": "$.travelers",
+                  "budget.$": "$.budget",
+                  "airline_preference.$": "$.airline_preference",
+                  "interests.$": "$.interests",
+                  "weather_data.$": "$.parallelResults[0]",
+                  "flight_data.$": "$.parallelResults[1]"
+                }
+              },
+              "ResultPath": "$.plannerResult",
+              "ResultSelector": {
+                "statusCode.$": "$.Payload.statusCode",
+                "decision.$": "$.Payload.decision",
+                "decision_reason.$": "$.Payload.decision_reason",
+                "booking_status.$": "$.Payload.booking_status",
+                "booking_confirmation.$": "$.Payload.booking_confirmation",
+                "message.$": "$.Payload.message"
+              },
+              "Next": "CheckPlannerDecision",
+              "Retry": [
+                {
+                  "ErrorEquals": [
+                    "Lambda.ServiceException",
+                    "Lambda.AWSLambdaException",
+                    "Lambda.SdkClientException"
+                  ],
+                  "IntervalSeconds": 2,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 2.0
+                }
+              ],
+              "Catch": [
+                {
+                  "ErrorEquals": ["States.ALL"],
+                  "Next": "HandleError",
+                  "ResultPath": "$.error"
+                }
+              ]
+            },
+            "CheckPlannerDecision": {
+              "Type": "Choice",
+              "Comment": "Check if planner booked automatically or needs human review",
+              "Choices": [
+                {
+                  "Variable": "$.plannerResult.decision",
+                  "StringEquals": "booked",
+                  "Next": "BookingSuccess"
+                },
+                {
+                  "Variable": "$.plannerResult.decision",
+                  "StringEquals": "needs_human_review",
+                  "Next": "WaitForHuman"
+                }
+              ],
+              "Default": "HandleError"
+            },
+            "BookingSuccess": {
+              "Type": "Pass",
+              "Parameters": {
+                "statusCode": 200,
+                "booking_status": "completed",
+                "message": "Booking completed successfully",
+                "booking_confirmation.$": "$.plannerResult.booking_confirmation"
+              },
+              "End": true
+            },
+            "BookingSuccessAfterReview": {
+              "Type": "Pass",
+              "Comment": "Terminal for the human-review path: the confirmation is produced by PlannerFinalizeBooking, not PlannerAnalyzeAndBook",
+              "Parameters": {
+                "statusCode": 200,
+                "booking_status": "completed",
+                "message": "Booking completed after human review",
+                "booking_confirmation.$": "$.finalBookingResult.booking_confirmation"
+              },
+              "End": true
+            },
+            "WaitForHuman": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:${AWS::Region}:${AWS::AccountId}:activity:human-review",
+              "Comment": "Wait for human review via Step Functions Activity",
+              "ResultPath": "$.humanDecision",
+              "TimeoutSeconds": 3600,
+              "Next": "ProcessHumanDecision",
+              "Catch": [
+                {
+                  "ErrorEquals": ["States.Timeout"],
+                  "Next": "HumanReviewTimeout",
+                  "ResultPath": "$.timeoutError"
+                },
+                {
+                  "ErrorEquals": ["States.ALL"],
+                  "Next": "HandleError",
+                  "ResultPath": "$.error"
+                }
+              ]
+            },
+            "ProcessHumanDecision": {
+              "Type": "Choice",
+              "Comment": "Process the human decision: approved or rejected",
+              "Choices": [
+                {
+                  "Variable": "$.humanDecision.decision",
+                  "StringEquals": "approved",
+                  "Next": "PlannerFinalizeBooking"
+                },
+                {
+                  "Variable": "$.humanDecision.decision",
+                  "StringEquals": "rejected",
+                  "Next": "BookingRejected"
+                }
+              ],
+              "Default": "BookingRejected"
+            },
+            "PlannerFinalizeBooking": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::lambda:invoke",
+              "Parameters": {
+                "FunctionName": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:orch-planner-agent",
+                "Payload": {
+                  "action": "finalize_booking",
+                  "bookingID.$": "$.bookingID",
+                  "userId.$": "$.userId",
+                  "origin.$": "$.origin",
+                  "destination.$": "$.destination",
+                  "travel_dates.$": "$.travel_dates",
+                  "travelers.$": "$.travelers",
+                  "budget.$": "$.budget",
+                  "airline_preference.$": "$.airline_preference",
+                  "interests.$": "$.interests",
+                  "weather_data.$": "$.parallelResults[0]",
+                  "flight_data.$": "$.parallelResults[1]",
+                  "human_approval.$": "$.humanDecision"
+                }
+              },
+              "ResultPath": "$.finalBookingResult",
+              "ResultSelector": {
+                "statusCode.$": "$.Payload.statusCode",
+                "booking_status.$": "$.Payload.booking_status",
+                "booking_confirmation.$": "$.Payload.booking_confirmation",
+                "message.$": "$.Payload.message"
+              },
+              "Next": "BookingSuccessAfterReview",
+              "Retry": [
+                {
+                  "ErrorEquals": [
+                    "Lambda.ServiceException",
+                    "Lambda.AWSLambdaException",
+                    "Lambda.SdkClientException"
+                  ],
+                  "IntervalSeconds": 2,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 2.0
+                }
+              ],
+              "Catch": [
+                {
+                  "ErrorEquals": ["States.ALL"],
+                  "Next": "HandleError",
+                  "ResultPath": "$.error"
+                }
+              ]
+            },
+            "BookingRejected": {
+              "Type": "Pass",
+              "Result": {
+                "statusCode": 200,
+                "booking_status": "rejected",
+                "message": "Booking was rejected",
+                "rejection_reason.$": "$.humanDecision.reason"
+              },
+              "End": true
+            },
+            "HumanReviewTimeout": {
+              "Type": "Pass",
+              "Result": {
+                "statusCode": 408,
+                "booking_status": "timeout",
+                "message": "Human review timed out after 1 hour",
+                "timeout_reason": "No human decision received within the allowed timeframe"
+              },
+              "End": true
+            },
+            "HandleError": {
+              "Type": "Pass",
+              "Result": {
+                "statusCode": 500,
+                "booking_status": "error",
+                "message": "An error occurred during the booking process",
+                "error_details": "Check execution logs for more information"
+              },
+              "End": true
+            }
+          }
+        }
+
+Outputs:
+  EventBusName:
+    Description: Choreography bus name
+    Value: !Ref TravelBus
+    Export:
+      Name: !Sub ${AWS::StackName}-bus
+  EventBusArn:
+    Description: Choreography bus ARN
+    Value: !GetAtt TravelBus.Arn
+  StateMachineName:
+    Description: Orchestration state machine name
+    Value: travel-booking-orchestration
+  StateMachineArn:
+    Description: Orchestration state machine ARN
+    Value: !Ref TravelBookingOrchestrator
+  HumanReviewActivityArn:
+    Description: Activity ARN to poll/approve with (see scripts/approve_task.py)
+    Value: !Sub arn:aws:states:${AWS::Region}:${AWS::AccountId}:activity:${ActivityName}
+  CollectorLogGroup:
+    Description: Where the choreography terminal listener prints the final outcome
+    Value: !Sub /aws/lambda/${TripCollector}

@@ -1,0 +1,11 @@
+{
+  "bookingID": "BKG-2026-0002",
+  "userId": "user-123",
+  "origin": "London",
+  "destination": "Lisbon",
+  "travel_dates": "2026-09-21 to 2026-09-24",
+  "travelers": 1,
+  "budget": 50,
+  "airline_preference": "direct flights preferred",
+  "interests": "food markets"
+}
