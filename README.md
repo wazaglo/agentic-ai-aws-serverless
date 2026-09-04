@@ -48,46 +48,15 @@ fix**, the combined CloudFormation template, and production helper scripts.
 
 ### Module 1 — Choreography (event-driven, no central controller)
 
-```
-                           travel-agents-bus (EventBridge)
-  ┌─────────────┐     ┌──────────────┐     ┌──────────────┐
-  │ TripRequested│────▶│ PlannerAgent │────▶│ WeatherAgent │
-  │ (travel.demo)│     │              │     │              │
-  └─────────────┘     └──────────────┘     └──────┬───────┘
-                          ItineraryPlanned    WeatherChecked
-                                                     │
-                      ┌──────────────┐     ┌────────▼───────┐
-                      │ TripCollector│◀────│  FlightAgent   │
-                      │ (terminal)   │     │                │
-                      └──────────────┘     └────────────────┘
-                       FlightBooked              │
-                         TripAbandoned ◀─────────┘
-                         (if weather advisory != PROCEED)
-```
+![Module 1 choreography architecture](docs/images/architecture-choreography.svg)
 
-Each arrow is a **domain event** on the bus. Agents never call each other
-directly — they announce what happened and the next agent reacts.
+Each arrow is a **domain event** on `travel-agents-bus`. Agents never call
+each other directly — they announce what happened and the next agent reacts.
+Three of the four Lambdas call Amazon Bedrock to do their reasoning.
 
 ### Module 2 — Orchestration (ASL state machine owns everything)
 
-```
-  PlannerExtract ──▶ Parallel[WeatherGet | FlightSearch] ──▶ PlannerAnalyzeAndBook
-                                                                          │
-                                                            ┌─────────────┴─────────────┐
-                                                            ▼                           ▼
-                                              budget ≥ 100                    budget < 100
-                                              decision=booked                  decision=needs_human_review
-                                                            │                           │
-                                                            ▼                           ▼
-                                                    BookingSuccess              WaitForHuman (Activity, 1 h)
-                                                                                      │
-                                                         ┌──────────────────────────────┤
-                                                         ▼                              ▼
-                                                approved → PlannerFinalizeBooking    rejected → BookingRejected
-                                                         │                              ▼
-                                                         ▼                         BookingRejected
-                                            BookingSuccessAfterReview              HumanReviewTimeout
-```
+![Module 2 orchestration architecture](docs/images/architecture-orchestration.svg)
 
 The budget threshold in `src/orch/planner.py` is **deterministic code**
 (auditable, reproducible); the LLM writes the human-facing prose. This is
@@ -164,6 +133,7 @@ Stack creation takes ~3 minutes. The template creates:
 - **Step Functions state machine** (`travel-booking-orchestration`)
 - **Step Functions Activity** (`human-review`)
 - **5 IAM roles** (shared, not per-function)
+- **SQS dead-letter queue** + **CloudWatch log groups** with retention
 
 ---
 
@@ -171,11 +141,12 @@ Stack creation takes ~3 minutes. The template creates:
 
 | Parameter | Default | Description |
 |---|---|---|
-| `CodeBucket` | `travel-agents-code-195675606509` | S3 bucket holding the deployment zip |
+| `CodeBucket` | *(required)* | S3 bucket holding the deployment zip |
 | `CodeKey` | `travel-agents.zip` | S3 key of the zip |
 | `ModelId` | `amazon.nova-lite-v1:0` | Bedrock model id (use in-region, not `us.` prefixed) |
 | `BusName` | `travel-agents-bus` | EventBridge bus name |
 | `ActivityName` | `human-review` | Step Functions Activity name |
+| `LogRetentionDays` | `30` | CloudWatch Logs retention for all log groups |
 
 Override any parameter at deploy time:
 
@@ -370,6 +341,8 @@ up to 1 hour). Always approve or reject HITL tasks rather than walking away.
   `lambda:InvokeFunction` only on the four target ARNs.
 - The deployment zip **excludes** `boto3`/`botocore`/`s3transfer` to avoid
   version drift with the Lambda runtime's copies.
+- **SQS dead-letter queue** captures any failed Lambda invocation for
+  inspection.
 
 ### Recommendations for production
 
@@ -377,7 +350,6 @@ up to 1 hour). Always approve or reject HITL tasks rather than walking away.
 - Add a **WAF** in front of any public API that triggers the flow.
 - Use **Lambda reserved concurrency** to cap Bedrock spend.
 - Store booking data in **DynamoDB** instead of logging to CloudWatch.
-- Add **dead-letter queues** on Lambda for failed invocations.
 - Use **AWS Config** rules to enforce model-id constraints.
 
 ---
@@ -473,38 +445,21 @@ and baked into the CloudFormation template.
 
 ```
 agentic-ai-aws-serverless/
-├── templates/
-│   └── travel-agents.template.yml    # CloudFormation (both modules, validated)
-├── asl/
-│   └── travel-booking-orchestration.json  # Fixed ASL (for console copy-paste / SDK)
+├── templates/                # CloudFormation template (both modules) → README
+├── asl/                      # Standalone Step Functions ASL for console copy-paste → README
+├── docs/                     # Documentation and architecture images → README
 ├── src/
-│   ├── agents/                       # Shared agent brains
-│   │   ├── planner.py                #   free-text → structured itinerary
-│   │   ├── weather.py                #   forecast + advisory (deterministic gate)
-│   │   ├── flight.py                 #   search + book (mock provider)
-│   │   └── telemetry.py              #   OpenTelemetry init (Strands spans)
-│   ├── choreography/                 # Module 1 handlers (event-driven)
-│   │   ├── events.py                 #   emit() helper for EventBridge
-│   │   ├── planner_handler.py        #   TripRequested → ItineraryPlanned
-│   │   ├── weather_handler.py        #   ItineraryPlanned → WeatherChecked
-│   │   ├── flight_handler.py         #   WeatherChecked → FlightBooked|TripAbandoned
-│   │   └── collector_handler.py      #   terminal listener (logs outcome)
-│   ├── orch/                         # Module 2 handlers (input in, result out)
-│   │   ├── planner.py                #   extract | analyze_and_decide | finalize_booking
-│   │   ├── weather.py                #   analyze (parallel branch)
-│   │   └── flight.py                 #   search (parallel branch)
-│   └── requirements.txt              # strands-agents + requests
-├── scripts/
-│   ├── build-deployment-package.sh   # builds combined zip (~12 MB)
-│   ├── send_trip_request.py          # Module 1 trigger
-│   ├── start_execution.py            # Module 2 start
-│   ├── approve_task.py               # HITL worker (get_activity_task + send_task_success)
-│   ├── sample-execution-auto.json    # budget=400 → auto-book
-│   └── sample-execution-human.json   # budget=50 → human review
-├── LICENSE                           # MIT (anuagarwaluk)
+│   ├── agents/               # Shared agent brains used by both modules → README
+│   ├── choreography/         # Module 1 handlers (event-driven) → README
+│   ├── orch/                 # Module 2 handlers (input in, result out) → README
+│   └── requirements.txt      # strands-agents + requests
+├── scripts/                  # Build + demo helpers → README
+├── LICENSE                   # MIT (anuagarwaluk)
 ├── README.md
 └── .gitignore
 ```
+
+Each sub-directory has its own `README.md` explaining its role.
 
 ---
 
