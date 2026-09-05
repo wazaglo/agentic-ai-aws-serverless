@@ -1,8 +1,8 @@
-# `src/agents/` — shared agent brains
+# `src/agents/`: shared agent brains
 
 The reusable agent logic called by **both** modules. Each file wraps one
 Strands `Agent` (Amazon Bedrock Nova Lite) behind a plain Python function.
-No handler logic, no event knowledge — the `choreography/` and `orch/`
+No handler logic. NOevent knowledge, the `choreography/` and `orch/`
 packages own coordination.
 
 | File | Role | Used by |
@@ -15,7 +15,7 @@ packages own coordination.
 Design notes:
 
 - **Deterministic mock flight provider.** Prices, flight numbers and
-  confirmation codes are derived from `sha256(origin|destination|date)` —
+  confirmation codes are derived from `sha256(origin|destination|date)` - 
   the demo never books real seats, never calls a paid API, and is reproducible.
   Swap the two `@tool` functions for a GDS/partner API and nothing else changes.
 - **Deterministic weather gate.** `worst_precip < RAIN_THRESHOLD` (default 60%,

@@ -1,6 +1,6 @@
-# `templates/` — CloudFormation
+# `templates/`: CloudFormation
 
-`travel-agents.template.yml` — the **whole system in one stack**: both demo
+`travel-agents.template.yml` - the **whole system in one stack**: both demo
 modules, all IAM, logging and the dead-letter queue. Written so you can tear
 it down and rebuild the account state in one command.
 
@@ -41,7 +41,7 @@ aws cloudformation delete-stack --region us-east-1 --stack-name travel-agents
 - `AWS::StepFunctions::StateMachine` `Definition` must be **native YAML/JSON**,
   not a `!Sub` string. Use `!GetAtt` for Lambda ARNs and `!Sub` only for the
   activity ARN.
-- There is **no `Type: STANDARD` property** — adding it fails model validation.
+- There is **no `Type: STANDARD` property**: adding it fails model validation.
 - `TracingConfiguration` takes `Enabled: true`; `Mode: PassThrough` is SDK-only.
 - The name property is `StateMachineName`, not `Name`.
 - `events:PutEvents` needs the bus **ARN** (`!GetAtt TravelBus.Arn`), not the name.

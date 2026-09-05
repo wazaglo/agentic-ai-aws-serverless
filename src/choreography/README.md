@@ -1,4 +1,4 @@
-# `src/choreography/` — Module 1: event-driven agents
+# `src/choreography/`: Module 1: event-driven agents
 
 Four Lambda handlers that coordinate purely through **domain events** on the
 custom EventBridge bus `travel-agents-bus`. Nobody calls anybody: each handler
@@ -22,7 +22,7 @@ FlightBooked / TripAbandoned ─▶ collector_handler (terminal, logs outcome)
 Gotchas baked into the design:
 
 - **Two event sources.** The external trigger uses `travel.demo`; agents emit
-  `travel.agents`. The four rules in the CFN template match these exactly —
+  `travel.agents`. The four rules in the CFN template match these exactly - 
   mixing them up silently breaks the chain.
 - The branch (book vs. abandon) is hidden inside `flight_handler.py`. That is
   the point of choreography: order and branching are *emergent*, not declared.

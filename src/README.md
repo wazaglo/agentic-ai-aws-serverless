@@ -1,4 +1,4 @@
-# `src/` — Lambda source code
+# `src/`: Lambda source code
 
 The Python code that runs inside all seven Lambda functions. The three
 sub-packages are zipped to the **root** of the deployment package by
@@ -19,7 +19,7 @@ Key principles:
   The model only writes human-facing text. This keeps `Choice` states and event
   rules predictable.
 - **`MODEL_ID`** is read from the Lambda environment (injected by the template).
-  Default `amazon.nova-lite-v1:0` — do not use the `us.`-prefixed id, it routes
+  Default `amazon.nova-lite-v1:0` - do not use the `us.`-prefixed id, it routes
   cross-region to us-west-2.
 - **boto3 is not vendored.** The Lambda runtime provides it; the build script
   deliberately strips `boto3`/`botocore`/`s3transfer` from the zip.

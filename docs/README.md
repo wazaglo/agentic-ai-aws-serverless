@@ -1,4 +1,4 @@
-# `docs/` — documentation assets
+# `docs/`: documentation assets
 
 | Path | Description |
 |---|---|

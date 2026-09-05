@@ -1,7 +1,7 @@
 # Agentic AI Architectures with AWS Serverless
 
-Two multi-agent travel-booking systems — **choreography** (EventBridge events)
-and **orchestration** (Step Functions + human-in-the-loop) — deployed from **one
+Two multi-agent travel-booking systems - **choreography** (EventBridge events)
+and **orchestration** (Step Functions + human-in-the-loop), deployed from **one
 CloudFormation stack**, both calling Amazon Bedrock Nova Lite via
 [Strands](https://strandsagents.com). Rebuilt from the MIT-licensed
 [workshop by anuagarwaluk](https://github.com/anuagarwaluk/Agentic-AI-architectures-with-AWS-Serverless);
@@ -64,4 +64,4 @@ More: [state machine](docs/screenshots/04-sfn-state-machine.png) · [activity](d
 aws cloudformation delete-stack --region us-east-1 --stack-name travel-agents
 ```
 
-MIT — [LICENSE](LICENSE)
+MIT - [LICENSE](LICENSE)

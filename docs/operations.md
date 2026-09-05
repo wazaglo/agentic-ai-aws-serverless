@@ -2,15 +2,15 @@
 
 ## Monitoring
 
-- **CloudWatch Logs** — each Lambda writes to `/aws/lambda/<FunctionName>`:
+- **CloudWatch Logs**: each Lambda writes to `/aws/lambda/<FunctionName>`:
   `aws logs tail /aws/lambda/orch-planner-agent --follow --region us-east-1`
-- **State machine logs** — every execution event at `ALL` level lands in
+- **State machine logs**: every execution event at `ALL` level lands in
   `/aws/vendedlogs/states/travel-booking-orchestration`.
-- **X-Ray** — active tracing on all Lambdas + the state machine; traces show
+- **X-Ray**: active tracing on all Lambdas + the state machine; traces show
   Bedrock latency and Strands spans.
-- **Strands telemetry** — OpenTelemetry spans via console exporter; set
+- **Strands telemetry**: OpenTelemetry spans via console exporter; set
   `OTEL_EXPORTER_OTLP_ENDPOINT` (ADOT layer) for real traces.
-- **Dead-letter queue** — `travel-agents-dead-letter` (SQS, 14-day retention)
+- **Dead-letter queue**: `travel-agents-dead-letter` (SQS, 14-day retention)
   captures failed Lambda invocations.
 
 Key metrics: Lambda `Invocations`/`Errors`/`Duration`; SFN
@@ -30,7 +30,7 @@ Idle stack: **$0**. Per full demo run (all pay-per-use):
 | CloudWatch Logs (~100 KB) | negligible |
 
 Caution: `WaitForHuman` executions **bill while paused** (up to 1 h). Approve
-or reject — don't walk away.
+or reject, don't walk away.
 
 ## Security
 

@@ -1,6 +1,6 @@
-# `asl/` — raw state machine definition
+# `asl/`: raw state machine definition
 
-`travel-booking-orchestration.json` — the Amazon States Language definition of
+`travel-booking-orchestration.json` - the Amazon States Language definition of
 the Module 2 state machine, **with the bug fix** described in the top-level
 README. This copy exists for people who want to create or update the state
 machine from the Step Functions console or the SDK instead of CloudFormation.
@@ -24,7 +24,7 @@ PlannerExtract → Parallel[WeatherGet | FlightSearch] → PlannerAnalyzeAndBook
 - Every Task state **retries** transient Lambda errors 3× with exponential
   backoff and **catches** `States.ALL` into `HandleError`, so executions
   always reach a terminal state with a JSON result.
-- `WaitForHuman` is a plain Activity task (pure task-token pattern — no SQS).
+- `WaitForHuman` is a plain Activity task (pure task-token pattern. NOSQS).
   Resolve it from anywhere with `states:SendTaskSuccess`.
 - `BookingSuccess` vs `BookingSuccessAfterReview` is **the fix**: the two
   terminal paths read `booking_confirmation` from different JSONPaths

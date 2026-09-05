@@ -1,4 +1,4 @@
-# `scripts/` — build and demo helpers
+# `scripts/`: build and demo helpers
 
 Local Python 3 + boto3 utilities. All take `--region` (default `us-east-1`).
 `pip install boto3` is the only dependency.
@@ -9,13 +9,13 @@ Local Python 3 + boto3 utilities. All take `--region` (default `us-east-1`).
 |---|---|
 | `build-deployment-package.sh` | Builds the combined ~13 MB zip for all 7 Lambdas: installs `strands-agents==1.54.0` + `requests` into a temp venv, drops `boto3`/`botocore`/`s3transfer` (runtime provides them), copies `src/*` to the zip root, zips. Override with `STRANDS_VERSION=... PYTHON=python3.12`. |
 
-## Module 1 — choreography
+## Module 1: choreography
 
 | Script | Purpose |
 |---|---|
 | `send_trip_request.py "3 days in Lisbon"` | Puts a `TripRequested` event (source `travel.demo`) on `travel-agents-bus`. Watch: `aws logs tail /aws/lambda/TripCollector --follow`. |
 
-## Module 2 — orchestration
+## Module 2: orchestration
 
 | Script | Purpose |
 |---|---|
