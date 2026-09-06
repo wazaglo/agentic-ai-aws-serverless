@@ -7,10 +7,10 @@ packages own coordination.
 
 | File | Role | Used by |
 |---|---|---|
-| `planner.py` | `plan_trip(request) -> dict` — free-text travel request → structured itinerary JSON | choreography PlannerAgent |
-| `weather.py` | `check_weather(itinerary) -> dict` — Open-Meteo forecast + deterministic `PROCEED`/`RECONSIDER` advisory; also exposes the `get_forecast` tool used by Module 2 | both modules |
+| `planner.py` | `plan_trip(request) -> dict` - free-text travel request → structured itinerary JSON | choreography PlannerAgent |
+| `weather.py` | `check_weather(itinerary) -> dict` - Open-Meteo forecast + deterministic `PROCEED`/`RECONSIDER` advisory; also exposes the `get_forecast` tool used by Module 2 | both modules |
 | `flight.py` | `search_flights` / `book_flight` tools (deterministic mock provider) and `book_trip_flight` agent flow | both modules |
-| `telemetry.py` | `init_telemetry(name)` — one-time Strands OpenTelemetry setup; console exporter by default, OTLP if `OTEL_EXPORTER_OTLP_ENDPOINT` is set | every agent |
+| `telemetry.py` | `init_telemetry(name)` - one-time Strands OpenTelemetry setup; console exporter by default, OTLP if `OTEL_EXPORTER_OTLP_ENDPOINT` is set | every agent |
 
 Design notes:
 

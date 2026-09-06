@@ -51,7 +51,7 @@ or reject, don't walk away.
 |---|---|
 | `StateMachineDoesNotExist` | List SMs and use the exact name/ARN: `aws stepfunctions list-state-machines` |
 | `AccessDenied` on Bedrock | Role needs `InvokeModelWithResponseStream` on model + profile ARNs |
-| Silent cross-region failure | Don't use `us.amazon.nova-lite-v1:0` — it routes to us-west-2; use `amazon.nova-lite-v1:0` |
+| Silent cross-region failure | Don't use `us.amazon.nova-lite-v1:0` - it routes to us-west-2; use `amazon.nova-lite-v1:0` |
 | Chain stops after PlannerAgent | Rule sources differ on purpose: external `travel.demo`, agents `travel.agents` |
 | `Handler ... not found` | Handler path must match zip layout: `orch.planner.handler`, `choreography.planner_handler.handler` |
 | CFN: `extraneous key [Type]` | `Type: STANDARD` is not a valid CFN property; default is STANDARD |

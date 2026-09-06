@@ -17,7 +17,7 @@ it down and rebuild the account state in one command.
 
 | Parameter | Default | Notes |
 |---|---|---|
-| `CodeBucket` | *(required)* | bucket containing the built zip — upload first |
+| `CodeBucket` | *(required)* | bucket containing the built zip - upload first |
 | `CodeKey` | `travel-agents.zip` | |
 | `ModelId` | `amazon.nova-lite-v1:0` | **not** `us.amazon...` (cross-region trap) |
 | `BusName` | `travel-agents-bus` | |
@@ -27,7 +27,7 @@ it down and rebuild the account state in one command.
 ## Deploy / update / delete
 
 ```bash
-# deploy (requires CAPABILITY_NAMED_IAM — the stack creates named roles)
+# deploy (requires CAPABILITY_NAMED_IAM - the stack creates named roles)
 aws cloudformation deploy --region us-east-1 --stack-name travel-agents \
   --template-file templates/travel-agents.template.yml \
   --parameter-overrides CodeBucket=my-bucket CodeKey=travel-agents.zip \

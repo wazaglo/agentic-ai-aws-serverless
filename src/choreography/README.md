@@ -16,8 +16,8 @@ FlightBooked / TripAbandoned ─▶ collector_handler (terminal, logs outcome)
 | `planner_handler.py` | `TripRequested` (source `travel.demo`) | `ItineraryPlanned` |
 | `weather_handler.py` | `ItineraryPlanned` | `WeatherChecked` |
 | `flight_handler.py` | `WeatherChecked` | `FlightBooked` or `TripAbandoned` |
-| `collector_handler.py` | both terminal events | — (logs the outcome) |
-| `events.py` | helper: `emit(detail_type, detail)` — the **only** way these agents talk | |
+| `collector_handler.py` | both terminal events | - (logs the outcome) |
+| `events.py` | helper: `emit(detail_type, detail)` - the **only** way these agents talk | |
 
 Gotchas baked into the design:
 

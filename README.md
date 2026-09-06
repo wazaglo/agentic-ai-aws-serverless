@@ -7,12 +7,12 @@ CloudFormation stack**, both calling Amazon Bedrock Nova Lite via
 [workshop by anuagarwaluk](https://github.com/anuagarwaluk/Agentic-AI-architectures-with-AWS-Serverless);
 adds the Module 2 agents, an ASL bug fix, one combined template, helper scripts.
 
-| | Module 1 — Choreography | Module 2 — Orchestration |
+| | Module 1 - Choreography | Module 2 - Orchestration |
 |---|---|---|
 | Coordination | Domain events on a bus; nobody calls anybody | State machine is the source of truth |
 | Agents | 4 Lambdas | 3 Lambdas, weather + flight in parallel |
 | Branching | Hidden in a handler | Visible `Choice` state |
-| Human-in-the-loop | — | Activity + task tokens |
+| Human-in-the-loop | - | Activity + task tokens |
 
 ## Architecture
 
